@@ -180,7 +180,8 @@ class FlowManager:
                             'client_packets': 0, 'server_packets': 0,
                             'client_acks': 0, 'server_acks': 0
                         },
-                        'ja4ssh': None,
+                        'ja4ssh': [],  # List of segments (calculated every 200 packets)
+                        'ja4ssh_segment_num': 0,  # Current segment number
                         # JA4L Stats
                         'ja4l_timestamps': {'A': None, 'B': None, 'C': None, 'D': None, 'client_ttl': 0, 'server_ttl': 0},
                         'ja4l_c': None, 'ja4l_s': None,
@@ -329,28 +330,42 @@ class FlowManager:
                         flow['ja4l_s'] = ja4l_s
 
                 # --- JA4SSH Logic ---
-                # We assume SSH if port 22 or detected via protocol analysis (not implemented here)
-                # For now, we collect stats for ALL TCP flows and decide later if it's SSH
+                # Only collect JA4SSH stats for SSH traffic (port 22)
+                # JA4SSH is specifically designed for SSH protocol analysis
                 if TCP in packet:
-                    stats = flow['ja4ssh_stats']
-                    if direction == 0: # Client
-                        stats['client_packets'] += 1
-                        if payload_len > 0:
-                            stats['client_payloads'].append(payload_len)
-                        if flags & 0x10: # ACK
-                            stats['client_acks'] += 1
-                    else: # Server
-                        stats['server_packets'] += 1
-                        if payload_len > 0:
-                            stats['server_payloads'].append(payload_len)
-                        if flags & 0x10: # ACK
-                            stats['server_acks'] += 1
+                    # Check if this is SSH traffic (port 22)
+                    is_ssh = (src_port == 22 or dst_port == 22)
                     
-                    # Update JA4SSH if we have enough samples (e.g. every 200 packets or periodically)
-                    # Optimization: Only calculate at the end or every N packets
-                    if (stats['client_packets'] + stats['server_packets']) == 200:
-                         # print("[DEBUG] Calculating JA4SSH", flush=True)
-                         flow['ja4ssh'] = get_ja4ssh_fingerprint(stats)
+                    if is_ssh:
+                        stats = flow['ja4ssh_stats']
+                        if direction == 0: # Client
+                            stats['client_packets'] += 1
+                            if payload_len > 0:
+                                stats['client_payloads'].append(payload_len)
+                            if flags & 0x10: # ACK
+                                stats['client_acks'] += 1
+                        else: # Server
+                            stats['server_packets'] += 1
+                            if payload_len > 0:
+                                stats['server_payloads'].append(payload_len)
+                            if flags & 0x10: # ACK
+                                stats['server_acks'] += 1
+                        
+                        # Calculate JA4SSH every 200 packets (per JA4SSH spec)
+                        # Each 200-packet window creates a new segment
+                        if (stats['client_packets'] + stats['server_packets']) == 200:
+                             # print(f"[DEBUG] Calculating JA4SSH segment {flow['ja4ssh_segment_num']}", flush=True)
+                             ja4ssh_hash = get_ja4ssh_fingerprint(stats)
+                             if ja4ssh_hash:
+                                 flow['ja4ssh'].append(ja4ssh_hash)
+                                 flow['ja4ssh_segment_num'] += 1
+                                 # Reset stats for next segment
+                                 stats['client_payloads'] = []
+                                 stats['server_payloads'] = []
+                                 stats['client_packets'] = 0
+                                 stats['server_packets'] = 0
+                                 stats['client_acks'] = 0
+                                 stats['server_acks'] = 0
 
                 # --- JA4X Logic ---
                 # Check for Certificates
@@ -408,10 +423,13 @@ class FlowManager:
     def finalize_flow(self, flow):
         """Finalize flow processing before removal"""
         # JA4SSH Partial Flow Logic
-        # If we haven't calculated JA4SSH yet (e.g. flow < 200 packets), do it now
-        if not flow['ja4ssh'] and (flow['ja4ssh_stats']['client_packets'] > 0 or flow['ja4ssh_stats']['server_packets'] > 0):
-             # print(f"[DEBUG] Finalizing JA4SSH for flow {flow['key']}", flush=True)
-             flow['ja4ssh'] = get_ja4ssh_fingerprint(flow['ja4ssh_stats'])
+        # If there are remaining packets < 200 that haven't been calculated, add as final segment
+        stats = flow['ja4ssh_stats']
+        if (stats['client_packets'] > 0 or stats['server_packets'] > 0):
+             # print(f"[DEBUG] Finalizing JA4SSH partial segment for flow {flow['key']}", flush=True)
+             ja4ssh_hash = get_ja4ssh_fingerprint(stats)
+             if ja4ssh_hash:
+                 flow['ja4ssh'].append(ja4ssh_hash)
 
     def check_timeouts(self):
         """Check for expired flows and move them to finished queue"""
@@ -547,10 +565,14 @@ class AegisNetCapture:
             return float(stats.mode(l, keepdims=True)[0][0]) if len(l) > 0 else 0
         def safe_skew(l): 
             arr = safe_array(l)
-            return float(stats.skew(arr)) if len(arr) > 2 else 0
+            if len(arr) <= 2 or np.std(arr) == 0:
+                return 0
+            return float(stats.skew(arr))
         def safe_kurtosis(l):
             arr = safe_array(l)
-            return float(stats.kurtosis(arr)) if len(arr) > 2 else 0
+            if len(arr) <= 2 or np.std(arr) == 0:
+                return 0
+            return float(stats.kurtosis(arr))
         def safe_cov(l): 
             m = safe_mean(l)
             return safe_std(l) / m if m != 0 else 0
@@ -615,7 +637,7 @@ class AegisNetCapture:
             'ja4': flow['ja4'] if flow['ja4'] else "None",
             'ja4s': flow['ja4s'] if flow['ja4s'] else "None",
             'ja4h': flow['ja4h'] if flow['ja4h'] else "None",
-            'ja4ssh': flow['ja4ssh'] if flow['ja4ssh'] else "None",
+            'ja4ssh': ";".join(flow['ja4ssh']) if flow['ja4ssh'] else "None",
             'ja4x': ";".join(flow['ja4x']) if flow['ja4x'] else "None",
             'ja4l_c': flow['ja4l_c'] if flow['ja4l_c'] else "None",
             'ja4l_s': flow['ja4l_s'] if flow['ja4l_s'] else "None",
