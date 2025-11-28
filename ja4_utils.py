@@ -147,12 +147,8 @@ def get_ja4_fingerprint(packet):
             if ext_type in GREASE_TABLE:
                 continue
             
-            # SNI (0) and ALPN (16) are excluded from the extension list in JA4?
-            # Checking JA4 spec: "The values 0x0000 (SNI) and 0x0010 (ALPN) are removed from the list."
-            if ext_type == 0 or ext_type == 16:
-                pass
-            else:
-                extensions.append(f"{ext_type:04x}")
+            # Add all extensions after GREASE filtering (including SNI and ALPN)
+            extensions.append(f"{ext_type:04x}")
 
             # Extract Signature Algorithms (0x000d)
             if ext_type == 13: # 0x000d
@@ -215,7 +211,7 @@ def get_ja4_fingerprint(packet):
              full_ext_string = ",".join(sorted_extensions)
 
         # Handle empty extensions
-        if not full_ext_string and not sorted_extensions:
+        if not sorted_extensions:
             ext_hash = "000000000000"
         else:
             ext_hash = sha256_12(full_ext_string)
@@ -462,32 +458,23 @@ def get_ja4h_fingerprint(packet):
             # Split by ';'
             parts = cookie_val.split(';')
             for p in parts:
+                p = p.strip()
                 if '=' in p:
-                    c_name, c_val = p.split('=', 1)
-                    cookie_names.append(c_name.strip())
-                    cookie_values.append(c_val.strip())
+                    c_name = p.split('=', 1)[0].strip()
+                    cookie_names.append(c_name)
+                    cookie_values.append(p)  # Full "name=value" string
                 else:
-                    # Cookie without value?
-                    cookie_names.append(p.strip())
-                    cookie_values.append("")
+                    # Cookie without value
+                    cookie_names.append(p)
+                    cookie_values.append(p)
             
-            # Sort cookies?
-            # JA4H official python implementation seems to sort them.
-            # Let's sort by name.
-            # Actually, we should sort the pairs to keep name-value association if we were reconstructing,
-            # but we hash names and values separately.
-            # If we sort names, we should probably sort values corresponding to those names?
-            # Or sort values independently?
-            # Usually it's: sort pairs by name, then extract names and values.
+            # Sort names and values INDEPENDENTLY (official behavior)
+            # This breaks name-value association, which is intentional per official ja4h.py
+            cookie_names.sort()
+            cookie_values.sort()
             
-            pairs = list(zip(cookie_names, cookie_values))
-            pairs.sort(key=lambda x: x[0]) # Sort by name
-            
-            sorted_names = [x[0] for x in pairs]
-            sorted_values = [x[1] for x in pairs]
-            
-            cookie_name_hash = sha256_12(",".join(sorted_names))
-            cookie_value_hash = sha256_12(",".join(sorted_values))
+            cookie_name_hash = sha256_12(",".join(cookie_names))
+            cookie_value_hash = sha256_12(",".join(cookie_values))
         else:
             cookie_name_hash = "000000000000"
             cookie_value_hash = "000000000000"
