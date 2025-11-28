@@ -333,8 +333,12 @@ class FlowManager:
                 # Only collect JA4SSH stats for SSH traffic (port 22)
                 # JA4SSH is specifically designed for SSH protocol analysis
                 if TCP in packet:
+                    # Extract ports from packet for SSH check
+                    pkt_src_port = packet[TCP].sport if packet[TCP].sport is not None else 0
+                    pkt_dst_port = packet[TCP].dport if packet[TCP].dport is not None else 0
+                    
                     # Check if this is SSH traffic (port 22)
-                    is_ssh = (src_port == 22 or dst_port == 22)
+                    is_ssh = (pkt_src_port == 22 or pkt_dst_port == 22)
                     
                     if is_ssh:
                         stats = flow['ja4ssh_stats']
